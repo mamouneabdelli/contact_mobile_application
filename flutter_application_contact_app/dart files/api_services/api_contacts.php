@@ -1,75 +1,12 @@
 <?php
-// api_contacts.php - API complète pour gérer les contacts
+// api_contacts.php - Updated API with account support
 
-// ==================== CONFIGURATION ====================
-header('Content-Type: application/json; charset=utf-8');
-header('Access-Control-Allow-Origin: *');
-header('Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS');
-header('Access-Control-Allow-Headers: Content-Type, Authorization');
+require_once 'config.php';
 
-// Gérer les requêtes OPTIONS (preflight)
-if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
-    http_response_code(200);
-    exit();
-}
+// ==================== CONTACT FUNCTIONS ====================
 
-// Configuration de la base de données
-define('DB_HOST', 'localhost');
-define('DB_USER', 'root');
-define('DB_PASS', '');
-define('DB_NAME', 'contact_app');
-
-// Fonction pour envoyer une réponse JSON
-function sendResponse($success, $message, $data = null, $statusCode = 200) {
-    http_response_code($statusCode);
-    $response = [
-        'success' => $success,
-        'message' => $message
-    ];
-    
-    if ($data !== null) {
-        $response['data'] = $data;
-    }
-    
-    echo json_encode($response, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT);
-    exit();
-}
-
-// ==================== CONNEXION DB ====================
-class Database {
-    private $host = DB_HOST;
-    private $user = DB_USER;
-    private $pass = DB_PASS;
-    private $dbname = DB_NAME;
-    private $conn;
-
-    public function connect() {
-        $this->conn = null;
-
-        try {
-            $this->conn = new PDO(
-                "mysql:host={$this->host};dbname={$this->dbname};charset=utf8mb4",
-                $this->user,
-                $this->pass,
-                [
-                    PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
-                    PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
-                    PDO::ATTR_EMULATE_PREPARES => false
-                ]
-            );
-        } catch(PDOException $e) {
-            error_log('Connection Error: ' . $e->getMessage());
-            sendResponse(false, 'Database connection failed', null, 500);
-        }
-
-        return $this->conn;
-    }
-}
-
-// ==================== FONCTIONS CRUD ====================
-
-// 1. GET ALL CONTACTS
-function getAllContacts($db) {
+// 1. GET ALL CONTACTS FOR AN ACCOUNT
+function getAllContacts($db, $accountId) {
     try {
         $query = "SELECT 
                     c.id as contact_id,
@@ -82,9 +19,11 @@ function getAllContacts($db) {
                     p.image_url
                   FROM contact c
                   INNER JOIN personne p ON c.personne_id = p.id
+                  WHERE c.account_id = :account_id
                   ORDER BY c.date_ajout DESC";
         
         $stmt = $db->prepare($query);
+        $stmt->bindParam(':account_id', $accountId, PDO::PARAM_INT);
         $stmt->execute();
         
         $contacts = [];
@@ -111,11 +50,12 @@ function getAllContacts($db) {
 }
 
 // 2. GET CONTACT BY ID
-function getContactById($db, $id) {
+function getContactById($db, $id, $accountId) {
     try {
         $query = "SELECT 
                     c.id as contact_id,
                     c.date_ajout,
+                    c.account_id,
                     p.id as personne_id,
                     p.nom,
                     p.prenom,
@@ -124,10 +64,11 @@ function getContactById($db, $id) {
                     p.image_url
                   FROM contact c
                   INNER JOIN personne p ON c.personne_id = p.id
-                  WHERE c.id = :id";
+                  WHERE c.id = :id AND c.account_id = :account_id";
         
         $stmt = $db->prepare($query);
         $stmt->bindParam(':id', $id, PDO::PARAM_INT);
+        $stmt->bindParam(':account_id', $accountId, PDO::PARAM_INT);
         $stmt->execute();
         
         if ($row = $stmt->fetch()) {
@@ -154,8 +95,7 @@ function getContactById($db, $id) {
 }
 
 // 3. CREATE CONTACT
-function createContact($db, $data) {
-    // Validation des données
+function createContact($db, $data, $accountId) {
     if (!isset($data['personne']) || 
         !isset($data['personne']['nom']) || 
         !isset($data['personne']['prenom']) || 
@@ -166,15 +106,15 @@ function createContact($db, $data) {
     $db->beginTransaction();
     
     try {
-        // Email par défaut si non fourni
+        // Generate email if not provided
         $email = isset($data['personne']['email']) && !empty($data['personne']['email']) 
                 ? $data['personne']['email']
-                : strtolower($data['personne']['prenom']) . '.' . strtolower($data['personne']['nom']) . '@email.com';
+                : strtolower($data['personne']['prenom']) . '.' . 
+                  strtolower($data['personne']['nom']) . '@email.com';
         
-        // Image par défaut si non fournie
         $imageUrl = $data['personne']['imageUrl'] ?? null;
         
-        // Insérer la personne
+        // Insert person
         $queryPersonne = "INSERT INTO personne (nom, prenom, telephone, email, image_url) 
                           VALUES (:nom, :prenom, :telephone, :email, :image_url)";
         
@@ -188,12 +128,13 @@ function createContact($db, $data) {
         
         $personneId = $db->lastInsertId();
         
-        // Insérer le contact
+        // Insert contact with account_id
         $dateAjout = date('Y-m-d H:i:s');
-        $queryContact = "INSERT INTO contact (personne_id, date_ajout) 
-                         VALUES (:personne_id, :date_ajout)";
+        $queryContact = "INSERT INTO contact (account_id, personne_id, date_ajout) 
+                         VALUES (:account_id, :personne_id, :date_ajout)";
         
         $stmtContact = $db->prepare($queryContact);
+        $stmtContact->bindParam(':account_id', $accountId, PDO::PARAM_INT);
         $stmtContact->bindParam(':personne_id', $personneId, PDO::PARAM_INT);
         $stmtContact->bindParam(':date_ajout', $dateAjout);
         $stmtContact->execute();
@@ -225,7 +166,7 @@ function createContact($db, $data) {
 }
 
 // 4. UPDATE CONTACT
-function updateContact($db, $id, $data) {
+function updateContact($db, $id, $data, $accountId) {
     if (!isset($data['personne'])) {
         sendResponse(false, 'Données incomplètes', null, 400);
     }
@@ -233,21 +174,23 @@ function updateContact($db, $id, $data) {
     $db->beginTransaction();
     
     try {
-        // Récupérer l'ID de la personne associée au contact
-        $queryGetPersonne = "SELECT personne_id FROM contact WHERE id = :id";
-        $stmtGet = $db->prepare($queryGetPersonne);
-        $stmtGet->bindParam(':id', $id, PDO::PARAM_INT);
-        $stmtGet->execute();
-        $result = $stmtGet->fetch();
+        // Check if contact belongs to account
+        $queryCheck = "SELECT personne_id FROM contact 
+                       WHERE id = :id AND account_id = :account_id";
+        $stmtCheck = $db->prepare($queryCheck);
+        $stmtCheck->bindParam(':id', $id, PDO::PARAM_INT);
+        $stmtCheck->bindParam(':account_id', $accountId, PDO::PARAM_INT);
+        $stmtCheck->execute();
+        $result = $stmtCheck->fetch();
         
         if (!$result) {
             $db->rollBack();
-            sendResponse(false, 'Contact non trouvé', null, 404);
+            sendResponse(false, 'Contact non trouvé ou non autorisé', null, 404);
         }
         
         $personneId = $result['personne_id'];
         
-        // Mettre à jour la personne
+        // Update person
         $queryUpdatePersonne = "UPDATE personne SET 
                                 nom = :nom,
                                 prenom = :prenom,
@@ -266,15 +209,6 @@ function updateContact($db, $id, $data) {
         $stmtPersonne->bindParam(':id', $personneId, PDO::PARAM_INT);
         $stmtPersonne->execute();
         
-        // Mettre à jour la date si fournie
-        if (isset($data['dateAjout'])) {
-            $queryUpdateContact = "UPDATE contact SET date_ajout = :date_ajout WHERE id = :id";
-            $stmtContact = $db->prepare($queryUpdateContact);
-            $stmtContact->bindParam(':date_ajout', $data['dateAjout']);
-            $stmtContact->bindParam(':id', $id, PDO::PARAM_INT);
-            $stmtContact->execute();
-        }
-        
         $db->commit();
         
         sendResponse(true, 'Contact mis à jour avec succès', [
@@ -290,28 +224,30 @@ function updateContact($db, $id, $data) {
 }
 
 // 5. DELETE CONTACT
-function deleteContact($db, $id) {
+function deleteContact($db, $id, $accountId) {
     try {
-        // Récupérer l'ID de la personne avant suppression
-        $queryGetPersonne = "SELECT personne_id FROM contact WHERE id = :id";
-        $stmtGet = $db->prepare($queryGetPersonne);
+        // Check if contact belongs to account
+        $queryGet = "SELECT personne_id FROM contact 
+                     WHERE id = :id AND account_id = :account_id";
+        $stmtGet = $db->prepare($queryGet);
         $stmtGet->bindParam(':id', $id, PDO::PARAM_INT);
+        $stmtGet->bindParam(':account_id', $accountId, PDO::PARAM_INT);
         $stmtGet->execute();
         $result = $stmtGet->fetch();
         
         if (!$result) {
-            sendResponse(false, 'Contact non trouvé', null, 404);
+            sendResponse(false, 'Contact non trouvé ou non autorisé', null, 404);
         }
         
         $personneId = $result['personne_id'];
         
-        // Supprimer le contact
+        // Delete contact (will cascade delete SIM cards)
         $queryDeleteContact = "DELETE FROM contact WHERE id = :id";
         $stmtContact = $db->prepare($queryDeleteContact);
         $stmtContact->bindParam(':id', $id, PDO::PARAM_INT);
         $stmtContact->execute();
         
-        // Supprimer la personne associée
+        // Delete person
         $queryDeletePersonne = "DELETE FROM personne WHERE id = :id";
         $stmtPersonne = $db->prepare($queryDeletePersonne);
         $stmtPersonne->bindParam(':id', $personneId, PDO::PARAM_INT);
@@ -326,7 +262,7 @@ function deleteContact($db, $id) {
 }
 
 // 6. SEARCH CONTACTS
-function searchContacts($db, $query) {
+function searchContacts($db, $query, $accountId) {
     try {
         $searchTerm = "%$query%";
         $sql = "SELECT 
@@ -340,13 +276,15 @@ function searchContacts($db, $query) {
                     p.image_url
                 FROM contact c
                 INNER JOIN personne p ON c.personne_id = p.id
-                WHERE p.nom LIKE :search 
+                WHERE c.account_id = :account_id
+                  AND (p.nom LIKE :search 
                    OR p.prenom LIKE :search 
                    OR p.telephone LIKE :search
-                   OR p.email LIKE :search
+                   OR p.email LIKE :search)
                 ORDER BY c.date_ajout DESC";
         
         $stmt = $db->prepare($sql);
+        $stmt->bindParam(':account_id', $accountId, PDO::PARAM_INT);
         $stmt->bindParam(':search', $searchTerm);
         $stmt->execute();
         
@@ -373,7 +311,7 @@ function searchContacts($db, $query) {
     }
 }
 
-// ==================== ROUTEUR PRINCIPAL ====================
+// ==================== ROUTER ====================
 
 $database = new Database();
 $db = $database->connect();
@@ -381,49 +319,54 @@ $db = $database->connect();
 $method = $_SERVER['REQUEST_METHOD'];
 $input = json_decode(file_get_contents('php://input'), true);
 
-// Récupérer l'action depuis GET ou POST
 $action = isset($_GET['action']) ? $_GET['action'] : (isset($input['action']) ? $input['action'] : null);
 $id = isset($_GET['id']) ? $_GET['id'] : (isset($input['id']) ? $input['id'] : null);
+$accountId = isset($_GET['accountId']) ? $_GET['accountId'] : (isset($input['accountId']) ? $input['accountId'] : null);
+
+// Account ID is required for all operations
+if (!$accountId && $method !== 'OPTIONS') {
+    sendResponse(false, 'Account ID requis', null, 401);
+}
 
 try {
     if ($method === 'GET') {
         switch($action) {
             case 'getById':
                 if ($id) {
-                    getContactById($db, $id);
+                    getContactById($db, $id, $accountId);
                 } else {
                     sendResponse(false, 'ID du contact requis', null, 400);
                 }
                 break;
             case 'search':
                 if (isset($_GET['q'])) {
-                    searchContacts($db, $_GET['q']);
+                    searchContacts($db, $_GET['q'], $accountId);
                 } else {
                     sendResponse(false, 'Terme de recherche requis', null, 400);
                 }
                 break;
             default:
-                getAllContacts($db);
+                getAllContacts($db, $accountId);
                 break;
         }
     } 
     else if ($method === 'POST') {
         if ($action === 'create' && isset($input['contact'])) {
-            createContact($db, $input['contact']);
+            createContact($db, $input['contact'], $accountId);
         } else {
             sendResponse(false, 'Action ou données invalides', null, 400);
         }
     } 
     else if ($method === 'PUT') {
         if ($action === 'update' && $id && isset($input['contact'])) {
-            updateContact($db, $id, $input['contact']);
+            updateContact($db, $id, $input['contact'], $accountId);
         } else {
             sendResponse(false, 'Action, ID ou données invalides', null, 400);
         }
     } 
     else if ($method === 'DELETE') {
         if ($id) {
-            deleteContact($db, $id);
+            deleteContact($db, $id, $accountId);
         } else {
             sendResponse(false, 'ID du contact requis', null, 400);
         }
