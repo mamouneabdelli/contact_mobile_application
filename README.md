@@ -127,11 +127,6 @@ Make sure your backend API URL is correctly configured in the Flutter project.
 * Contact backup & restore
 * Dark mode UI
 
----
-
-## 📄 License
-
-Specify your license here (MIT, GPL, etc.)
 
 ---
 
